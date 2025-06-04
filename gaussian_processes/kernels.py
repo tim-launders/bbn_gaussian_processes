@@ -354,7 +354,7 @@ class IndividualKernel(Kernel):
 
 class SE(IndividualKernel):
     """
-    Squared expoential kernel. 
+    Squared exponential kernel. 
 
     Attributes
     ----------
@@ -370,7 +370,7 @@ class SE(IndividualKernel):
 
     def __init__(self, length_scale=1.0, prior_type='uniform', prior_params=None):
         """
-        Initializes RBF kernel object. 
+        Initializes SE kernel object. 
 
         Parameters
         ----------
