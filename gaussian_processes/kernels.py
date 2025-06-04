@@ -352,9 +352,9 @@ class IndividualKernel(Kernel):
             return 1.0              # Return 1 since log(1) = 0, nothing is added to the MAP estimator
     
 
-class RBF(IndividualKernel):
+class SE(IndividualKernel):
     """
-    Radial basis function kernel. 
+    Squared expoential kernel. 
 
     Attributes
     ----------
