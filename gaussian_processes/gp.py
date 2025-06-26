@@ -5,6 +5,7 @@ import numpy as np
 import jax.numpy as jnp
 from . import kernels
 from . import optimizers
+from jaxlib import xla_extension
 from jax.scipy.linalg import block_diag
 from jax.random import PRNGKey, split, multivariate_normal
 from jax.lax.linalg import cholesky
@@ -32,7 +33,7 @@ class GPR:
     """
 
 
-    def __init__(self, kernel, noise=1e-10, optimizer_likelihood=None, optimizer_type=None):
+    def __init__(self, kernel, noise=1e-10, optimizer_likelihood=None, optimizer_type=None, mean_func=None):
         """
         Initializes the GPR model with a specified kernel and noise level. 
 
@@ -42,29 +43,42 @@ class GPR:
             The kernel to use for the GPR model. 
         noise : float, default=1e-10
             The noise level in the observations. Assists with numerical stability.
+        optimizer_likelihood : str, default=None
+            The likelihood to use for hyperparameter optimization. If None, no 
+            optimization is performed. Supported optimizers are 'marginal_likelihood', 'LOO',
+            'k-fold', and 'LDO'.
         optimizer_type : str, default=None
-            The optimizer to use for hyperparameter optimization. If None, no 
-            optimization is performed. Allowed optimizers are 'marginal_likelihood' and 'LOO'.
-        optimize_restarts : bool, default=False
-            Determines whether to use the initial values passed in for the kernel hyperparameters 
-            to begin hyperparameter optimization or to explore different starting points in 
-            hyperparameter space. 
+            The algorithm to use for hyperparameter optimization. If None, Adam is used. 
+            Supported algorithms are 'BFGS', 'restarts', and 'Adam'. 
+        mean_func : callable or array-like, default=None
+            Mean function to use for the GPR model. If None, a zero mean function is used. 
+            If a callable is provided, it should take an array-like input and return an array-like output. 
+            If a array-like is provided, it should be of shape (n_samples, ), and another array-like 
+            must be provided when making predictions. 
         """
-        valid_likelihoods = ["marginal_likelihood", "LOO"]
+        valid_likelihoods = ["marginal_likelihood", "LOO", "k-fold", "LDO"]
         valid_optimizers = ["BFGS", "restarts", "Adam"]
 
         if not isinstance(kernel, kernels.Kernel):
             raise TypeError("kernel must be an instance of the Kernel class.")
         self.kernel = kernel
         self.noise = noise
+
         if optimizer_likelihood is not None:
             if optimizer_likelihood not in valid_likelihoods:
-                raise ValueError("Invalid optimizer likelihood. Must be 'marginal_likelihood' or 'LOO'.")
+                raise ValueError("Invalid optimizer likelihood. Must be 'marginal_likelihood', 'LOO', 'k-fold', or 'LDO'.")
         if optimizer_type is not None:
             if optimizer_type not in valid_optimizers:
                 raise ValueError("Invalid optimizer type. Must be 'BFGS', 'restarts', or 'Adam'.")
         self.optimizer_likelihood = optimizer_likelihood
         self.optimizer_type = optimizer_type
+
+        if not isinstance(mean_func, (type(None), np.ndarray, xla_extension.ArrayImpl, list)) and not callable(mean_func):
+            raise TypeError("mean_func must be a callable or array-like object.")
+        if mean_func is None:
+            self.mean_func = lambda x: jnp.zeros(x.shape[0])
+        else:
+            self.mean_func = mean_func
 
 
     def fit(self, X, y, total_error=None, normalization_error=None, points=None):
@@ -116,10 +130,21 @@ class GPR:
 
         # If optimizer is given, optimize the kernel hyperparameters using the optimizer specified
         if self.optimizer_likelihood is not None:
+            # For optimization, subtract out the mean function from the training data before fitting with a zero mean in the optimizer
+            if callable(self.mean_func):
+                y_optimize = self.y_train - self.mean_func(self.X_train)
+            else:
+                y_optimize = self.y_train - jnp.array(self.mean_func)
+
             if self.optimizer_likelihood == "marginal_likelihood":
-                optimizer = optimizers.MarginalLikelihoodOptimizer(self.kernel, self.X_train, self.y_train, self.cov_mat)
+                optimizer = optimizers.MarginalLikelihoodOptimizer(self.kernel, self.X_train, y_optimize, self.cov_mat)
             elif self.optimizer_likelihood == "LOO":
-                optimizer = optimizers.LOOOptimizer(self.kernel, self.X_train, self.y_train, self.cov_mat, points)
+                optimizer = optimizers.LOOOptimizer(self.kernel, self.X_train, y_optimize, self.cov_mat, points)
+            elif self.optimizer_likelihood == "k-fold":
+                optimizer = optimizers.kfoldCVOptimizer(self.kernel, self.X_train, y_optimize, self.cov_mat, points, n_folds=5)
+            elif self.optimizer_likelihood == "LDO":
+                optimizer = optimizers.LeaveDatasetOutOptimizer(self.kernel, self.X_train, y_optimize, self.cov_mat, points)
+
             if self.optimizer_type == "BFGS":
                 params, loss = optimizer.optimize()
             elif self.optimizer_type == "restarts":
@@ -128,11 +153,12 @@ class GPR:
                 params, loss = optimizer.adam()
             self.kernel.set_params(params)
             return params, loss
+        
         else:
             return self.get_kernel_hyperparameters(), 0.0
         
 
-    def predict(self, X_pred, return_std=False, return_cov=False):
+    def predict(self, X_pred, return_std=False, return_cov=False, mean_pred=None):
         """
         Predicts the output for the given input samples. 
 
@@ -155,16 +181,29 @@ class GPR:
         y_cov : array-like of shape (n_samples, n_samples)
             Full covariance matrix of conditional distribution.
             Only returned if return_cov=True. 
+        mean_pred : array-like of shape (n_samples, )
+            Mean function at prediction points. Must be provided if mean_func is not callable. 
         """
+        if not callable(self.mean_func):
+            if not isinstance(mean_pred, (np.array, xla_extension.ArrayImpl, list)): 
+                raise ValueError("Must provide array-like mean_pred if mean_func is array-like.")
+            else:
+                y_subtract = self.y_train - jnp.array(mean_pred)
+        else:
+            y_subtract = self.y_train - self.mean_func(self.X_train)
+
         K11 = self.kernel(self.X_train) + self.cov_mat + self.noise * jnp.eye(len(self.X_train))
 
         # Implement Algorithm 2.1 from "Gaussian Processes for Machine Learning" by Rasmussen and Williams
         L = cholesky(K11)
-        alpha = jnp.linalg.solve(L.T, jnp.linalg.solve(L, self.y_train))
+        alpha = jnp.linalg.solve(L.T, jnp.linalg.solve(L, y_subtract))
         K12 = self.kernel(self.X_train, X_pred)
-        y_pred = K12.T @ alpha                           # Eqn. 2.25
+        if callable(self.mean_func):
+            y_pred = self.mean_func(X_pred) + K12.T @ alpha       # Eqn. 2.25
+        else:
+            y_pred = jnp.array(mean_pred) + K12.T @ alpha
         v = jnp.linalg.solve(L, K12)
-        y_cov = self.kernel(X_pred) - v.T @ v            # Eqn. 2.26
+        y_cov = self.kernel(X_pred) - v.T @ v                     # Eqn. 2.26
         y_std = jnp.sqrt(jnp.diag(y_cov))
         
         if return_std:
@@ -178,7 +217,7 @@ class GPR:
             return y_pred
     
     
-    def draw_samples(self, X_pred, n_draws=1, seed=0): 
+    def draw_samples(self, X_pred, n_draws=1, seed=0, mean_pred=None): 
         """
         Draws samples from the GP posterior.
 
@@ -190,12 +229,14 @@ class GPR:
             Number of samples to draw.
         seed : int, default=0
             Seed to use for the key. 
+        mean_pred : array-like of shape (n_samples, )
+            Mean function at prediction points. Must be provided if mean_func is not callable. 
         
         Returns
         -------
         samples : array-like of shape (n_draws, n_samples)
         """
-        pred_mean, pred_cov = self.predict(X_pred, return_cov=True)
+        pred_mean, pred_cov = self.predict(X_pred, return_cov=True, mean_pred=mean_pred)
 
         key = PRNGKey(seed)
         key, subkey = split(key)

@@ -735,4 +735,3 @@ class RationalQuadratic(IndividualKernel):
     def hyperprior(self):
         return super().hyperprior()
     
-

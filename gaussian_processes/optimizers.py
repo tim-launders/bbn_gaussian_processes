@@ -724,4 +724,3 @@ class LeaveDatasetOutOptimizer(Optimizer):
         hyperprior = jnp.log(self.kernel.hyperprior())
         return -loss - hyperprior
 
-
