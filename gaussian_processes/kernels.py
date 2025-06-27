@@ -585,7 +585,7 @@ class Matern(IndividualKernel):
         if not isinstance(nu, (float, int)) or nu <= 0:
             raise ValueError('Parameter nu must be a positive value.')
         self.nu = nu
-        super().__init__(length_scale, prior_type, prior_params)
+        super().__init__(length_scale, prior_type, prior_params, 'Matern Length Scale')
     
     def __call__(self, X1, X2=None):
         if X2 is None:
@@ -708,7 +708,7 @@ class RationalQuadratic(IndividualKernel):
         if not isinstance(alpha, (float, int)) or alpha < 0:
             raise ValueError('Scale mixture parameter alpha must positive.')
         self.alpha = alpha
-        super().__init__(length_scale, prior_type, prior_params)
+        super().__init__(length_scale, prior_type, prior_params, 'Rational Quadratic Length Scale')
     
     def __call__(self, X1, X2=None):
         if X2 is None:
