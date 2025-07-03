@@ -278,6 +278,21 @@ class GPR:
             ind += pts
 
         return cov_mat
+    
+
+    def set_covariance(self, cov_mat):
+        """
+        Sets GP covariance matrix to desired values. Should be called 
+        after fit() function.
+
+        Parameters
+        ----------
+        cov_mat : array-like of shape (n_samples, n_samples)
+            Covariance matrix to set. Must be correct shape.
+        """
+        if cov_mat.shape != self.cov_mat.shape:
+            raise ValueError("Must match correct shape for covariance structure.")
+        self.cov_mat = cov_mat
         
     
     def get_kernel_hyperparameters(self):
