@@ -716,9 +716,9 @@ class LeaveDatasetOutOptimizer(Optimizer):
             y_cov = lower_right - v.T @ v
             y_cov_inv = jnp.linalg.inv(y_cov)
 
-            # Calculate the predictive log probability to observe this fold, excluding factors of pi
+            # Calculate the predictive log probability to observe this fold
             residuals = self.train_y[test_indices] - y_pred
-            loss += -0.5 * jnp.linalg.slogdet(y_cov)[1] - 0.5 * jnp.dot(residuals.T, jnp.dot(y_cov_inv, residuals))
+            loss += -0.5 * jnp.linalg.slogdet(y_cov)[1] - 0.5 * jnp.dot(residuals.T, jnp.dot(y_cov_inv, residuals)) - 0.5 * self.points[i] * jnp.log(2*jnp.pi)
         
         # Add the hyperprior to the loss
         hyperprior = jnp.log(self.kernel.hyperprior())
