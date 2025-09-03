@@ -156,10 +156,6 @@ class Optimizer(ABC):
             opt_state = update_fn(step, grads, opt_state)
             update = jnp.abs(loss-prev_loss)
             prev_loss = loss
-            if step % 50 == 0:
-                print('')
-                print(loss,update)
-                print(jnp.exp(params_fn(opt_state)))
             step += 1
         theta = params_fn(opt_state)
         return jnp.exp(theta), loss

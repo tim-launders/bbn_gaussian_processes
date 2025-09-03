@@ -192,7 +192,7 @@ class GPR:
         else:
             y_subtract = self.y_train - self.mean_func(self.X_train)
 
-        K11 = self.kernel(self.X_train) + self.cov_mat + self.noise * jnp.eye(len(self.X_train))
+        K11 = self.kernel(self.X_train) + self.cov_mat + (self.noise * jnp.eye(len(self.X_train)))
 
         # Implement Algorithm 2.1 from "Gaussian Processes for Machine Learning" by Rasmussen and Williams
         L = cholesky(K11)
