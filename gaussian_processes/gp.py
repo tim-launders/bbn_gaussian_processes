@@ -49,7 +49,7 @@ class GPR:
             'k-fold', and 'LDO'.
         optimizer_type : str, default=None
             The algorithm to use for hyperparameter optimization. If None, Adam is used. 
-            Supported algorithms are 'BFGS', 'restarts', and 'Adam'. 
+            Supported algorithms are 'BFGS' and 'Adam'. 
         mean_func : callable or array-like, default=None
             Mean function to use for the GPR model. If None, a zero mean function is used. 
             If a callable is provided, it should take an array-like input and return an array-like output. 
@@ -57,7 +57,7 @@ class GPR:
             must be provided when making predictions. 
         """
         valid_likelihoods = ["marginal_likelihood", "LOO", "k-fold", "LDO"]
-        valid_optimizers = ["BFGS", "restarts", "Adam"]
+        valid_optimizers = ["BFGS", "Adam"]
 
         if not isinstance(kernel, kernels.Kernel):
             raise TypeError("kernel must be an instance of the Kernel class.")
@@ -69,7 +69,7 @@ class GPR:
                 raise ValueError("Invalid optimizer likelihood. Must be 'marginal_likelihood', 'LOO', 'k-fold', or 'LDO'.")
         if optimizer_type is not None:
             if optimizer_type not in valid_optimizers:
-                raise ValueError("Invalid optimizer type. Must be 'BFGS', 'restarts', or 'Adam'.")
+                raise ValueError("Invalid optimizer type. Must be 'BFGS' or 'Adam'.")
         self.optimizer_likelihood = optimizer_likelihood
         self.optimizer_type = optimizer_type
 
@@ -147,8 +147,6 @@ class GPR:
 
             if self.optimizer_type == "BFGS":
                 params, loss = optimizer.optimize()
-            elif self.optimizer_type == "restarts":
-                params, loss = optimizer.optimize_restarts()
             else: 
                 params, loss = optimizer.adam()
             self.kernel.set_params(params)
@@ -198,6 +196,7 @@ class GPR:
         L = cholesky(K11)
         alpha = jnp.linalg.solve(L.T, jnp.linalg.solve(L, y_subtract))
         K12 = self.kernel(self.X_train, X_pred)
+
         if callable(self.mean_func):
             y_pred = self.mean_func(X_pred) + K12.T @ alpha       # Eqn. 2.25
         else:

@@ -8,6 +8,7 @@ import math
 import random
 from jax.scipy.optimize import minimize
 from abc import ABC, abstractmethod
+from collections import namedtuple
 import math
 import warnings
 from . import kernels
@@ -144,21 +145,31 @@ class Optimizer(ABC):
         opt_state = init_fn(params)
         loss_and_grad = jax.value_and_grad(self.loss)
         prev_loss = 0
-        update = np.inf
         step = 1
-        while update > tolerance:
-            params = params_fn(opt_state)
+
+        # Define a named tuple for the state
+        State = namedtuple('State', ['opt_state', 'prev_loss', 'update', 'step'])
+
+        def cond_fun(state):
+            # Continue while the update is greater than the tolerance
+            return state.update > tolerance
+
+        def body_fun(state):
+            params = params_fn(state.opt_state)
             loss, grads = loss_and_grad(params)
-            if math.isnan(loss):
-                warnings.warn("Selected hyperparameters are not returning a positive-definite covariance matrix.")
-            if loss == jnp.inf:
-                warnings.warn("Optimal hyperparameters are outside the given bounds.")
-            opt_state = update_fn(step, grads, opt_state)
-            update = jnp.abs(loss-prev_loss)
-            prev_loss = loss
-            step += 1
-        theta = params_fn(opt_state)
-        return jnp.exp(theta), loss
+            opt_state = update_fn(state.step, grads, state.opt_state)
+            update = jnp.abs(loss - state.prev_loss)
+            return State(opt_state, loss, update, state.step + 1)
+
+        # Initialize the state
+        init_state = State(opt_state, prev_loss, jnp.inf, step)
+
+        # Use jax.lax.while_loop for the loop
+        final_state = jax.lax.while_loop(cond_fun, body_fun, init_state)
+
+        # Extract the final parameters and loss
+        theta = params_fn(final_state.opt_state)
+        return jnp.exp(theta), final_state.prev_loss
 
 
     @abstractmethod
@@ -612,7 +623,10 @@ class LeaveDatasetOutOptimizer(Optimizer):
             Number of points in each set of training data. 
         """
         super().__init__(kernel, train_X, train_y, cov_mat, points)
+        if len(points) < 2:
+            raise ValueError('Must provide multiple datasets to use LDO cross-validation.')
         self.points = jnp.array(self.points)
+        self.folds = self.partition_dataset()
 
     def optimize(self):
         """
@@ -687,36 +701,60 @@ class LeaveDatasetOutOptimizer(Optimizer):
         params = jnp.exp(theta)
         self.kernel.set_params(params)
         K11 = self.kernel(self.train_X) + self.cov_mat
-        n_sets = len(self.points)
-        n_samples = len(self.train_y)
         loss = 0
 
         # Loop through each dataset, calculating the cross-validation loss for each
-        for i in range(n_sets):
-            start_ind = jnp.sum(self.points[0:i], axis=0)
-            end_ind = start_ind + self.points[i]
-            test_indices = jnp.arange(start_ind, end_ind)
-            train_indices = jnp.concatenate((jnp.arange(0, start_ind), jnp.arange(end_ind, n_samples)))
+        for fold in self.folds:
+            train_indices = jnp.array(fold['train'])
+            test_indices = jnp.array(fold['test'])
+            n_test = jnp.array(fold['n_test'])
 
             # Partition the full covariance matrix into Schur complement blocks
             upper_left = jnp.take(jnp.take(K11, train_indices, axis=0), train_indices, axis=1)
             upper_right = jnp.take(jnp.take(K11, train_indices, axis=0), test_indices, axis=1)
             lower_left = jnp.take(jnp.take(K11, test_indices, axis=0), train_indices, axis=1)
             lower_right = jnp.take(jnp.take(K11, test_indices, axis=0), test_indices, axis=1)
+            y_train = jnp.take(self.train_y, train_indices)
+            y_test = jnp.take(self.train_y, test_indices)
 
             # Solve for the predictive mean and covariance 
             L = jnp.linalg.cholesky(upper_left)
-            alpha = jnp.linalg.solve(L.T, jnp.linalg.solve(L, self.train_y[train_indices]))
+            alpha = jnp.linalg.solve(L.T, jnp.linalg.solve(L, y_train))
             y_pred = lower_left @ alpha
             v = jnp.linalg.solve(L, upper_right)
             y_cov = lower_right - v.T @ v
             y_cov_inv = jnp.linalg.inv(y_cov)
 
             # Calculate the predictive log probability to observe this fold
-            residuals = self.train_y[test_indices] - y_pred
-            loss += -0.5 * jnp.linalg.slogdet(y_cov)[1] - 0.5 * jnp.dot(residuals.T, jnp.dot(y_cov_inv, residuals)) - 0.5 * self.points[i] * jnp.log(2*jnp.pi)
+            residuals = y_test - y_pred
+            loss += -0.5 * jnp.linalg.slogdet(y_cov)[1] - 0.5 * jnp.dot(residuals.T, jnp.dot(y_cov_inv, residuals)) - 0.5 * n_test * jnp.log(2 * jnp.pi)
         
         # Add the hyperprior to the loss
         hyperprior = jnp.log(self.kernel.hyperprior())
         return -loss - hyperprior
 
+    def partition_dataset(self):
+        """
+        Partitions the dataset into test and train indices for cross-validation.
+
+        Returns
+        -------
+        indices : list
+            List of cross-validation partition for each fold.
+        """
+        indices = []
+        n_sets = len(self.points)
+        n_samples = sum(self.points)
+
+        for i in range(n_sets):
+            start_ind = sum(self.points[:i]) if i > 0 else 0
+            end_ind = start_ind + self.points[i]
+            test_indices = list(range(start_ind, end_ind))
+            train_indices = list(range(0, start_ind)) + list(range(end_ind, n_samples))
+            indices.append({
+                'test': test_indices,
+                'train': train_indices,
+                'n_test': len(test_indices)
+            })
+        
+        return indices
